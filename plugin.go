@@ -17,7 +17,7 @@ func GetDBClient(ctx context.Context, logger common.Logger, dbConfig common.DBCo
 		return client, nil
 	}
 	// 打开插件
-	p, err := plugin.Open("/Users/wei.chen/Code/GoWorks/src/github.com/Ants24/data-tunnel-backend/cmd/server/plugins/" + string(dbConfig.DBType) + ".so")
+	p, err := plugin.Open("./plugins/" + string(dbConfig.DBType) + ".so")
 	if err != nil {
 		logger.Logger.Sugar().Errorf("failed to load plugin %s: %v", dbConfig.DBType, err)
 		return nil, fmt.Errorf("failed to load plugin %s: %v", dbConfig.DBType, err)

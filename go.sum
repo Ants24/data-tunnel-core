@@ -1,0 +1,4 @@
+github.com/Ants24/data-tunnel-common v1.0.0 h1:vmP5h7LmtmUTpXcO2myOejWYdCxWY/HloLSIGzvebik=
+github.com/Ants24/data-tunnel-common v1.0.0/go.mod h1:McoWYeWd5oAXHfPpmfoyqLDRoRAqgIsN4nWnE3cIJaE=
+github.com/marusama/semaphore/v2 v2.5.0 h1:o/1QJD9DBYOWRnDhPwDVAXQn6mQYD0gZaS1Tpx6DJGM=
+github.com/marusama/semaphore/v2 v2.5.0/go.mod h1:z9nMiNUekt/LTpTUQdpp+4sJeYqUGpwMHfW0Z8V8fnQ=

@@ -3,6 +3,7 @@ package datatunnelcore
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"sync"
 	"time"
 
@@ -58,8 +59,9 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 		return err
 	}
 
-	var wg sync.WaitGroup                   //并发控制,确保所有任务都完成
-	var lastError error                     // 修正变量名: laseError -> lastError
+	errCount := 0
+	var wg sync.WaitGroup //并发控制,确保所有任务都完成
+	// 修正变量名: laseError -> lastError
 	semaphores := semaphore.New(f.Parallel) //限制并发数
 	for _, table := range f.Tables {
 		select {
@@ -70,6 +72,7 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 		semaphores.Acquire(ctx, 1) //获取信号量
 		wg.Add(1)
 		go func(table TaskFullTable) {
+			var lastError error
 			defer wg.Done()
 			defer semaphores.Release(1)
 			loggerTable := common.NewLogWithoutConfig(f.JobCode + "-" + table.SourceTable)
@@ -81,7 +84,6 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 				Status:  common.JobStatusRunning,
 			}
 			TaskFullTableResultChannel <- result
-
 			//获取表的总数据量
 			var totalCount uint64
 			{
@@ -91,6 +93,7 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 					Filter:     table.Filter,
 				})
 				if err != nil {
+					errCount += 1
 					//推送
 					f.handleError(*loggerTable, result, err)
 					return
@@ -121,6 +124,8 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 			if isUseDestColumn {
 				destColumnNames, destColumnTypes, err = destDBClient.GetTableColumnNames(ctx, table.DestSchema, table.DestTable, []string{}, f.DestConfig.DBType)
 				if err != nil {
+					errCount += 1
+					lastError = err
 					//推送
 					f.handleError(*loggerTable, result, err)
 					return
@@ -129,6 +134,8 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 				copy(destinationColumnNamesCopy, destColumnNames)
 				sourceColumnNames, sourceColumnTypes, err = sourceDBClient.GetTableColumnNames(ctx, table.SourceSchema, table.SourceTable, destinationColumnNamesCopy, f.DestConfig.DBType)
 				if err != nil {
+					errCount += 1
+					lastError = err
 					//推送
 					f.handleError(*loggerTable, result, err)
 					return
@@ -136,6 +143,8 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 			} else {
 				sourceColumnNames, sourceColumnTypes, err = sourceDBClient.GetTableColumnNames(ctx, table.SourceSchema, table.SourceTable, []string{}, f.SourceConfig.DBType)
 				if err != nil {
+					errCount += 1
+					lastError = err
 					//推送
 					f.handleError(*loggerTable, result, err)
 					return
@@ -144,6 +153,7 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 				copy(sourceColumnNamesCopy, sourceColumnNames)
 				destColumnNames, destColumnTypes, err = destDBClient.GetTableColumnNames(ctx, table.DestSchema, table.DestTable, sourceColumnNamesCopy, f.SourceConfig.DBType)
 				if err != nil {
+					errCount += 1
 					//推送
 					f.handleError(*loggerTable, result, err)
 					return
@@ -158,6 +168,7 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 				//对表进行切片
 				subFullTasks, err = sourceDBClient.GenerateSubTasks(ctx, *loggerTable, table)
 				if err != nil {
+					lastError = err
 					//推送
 					f.handleError(*loggerTable, result, err)
 					return
@@ -182,12 +193,11 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-
 				err := destDBClient.WriteData(ctx, *loggerTable, table, destColumnNames, destColumnTypes, dataChannel)
 				if err != nil {
-					lastError = err // 修正变量名: laseError -> lastError
 					//推送
 					f.handleError(*loggerTable, result, err)
+					return
 				}
 			}()
 			subSemaphores := semaphore.New(table.Config.Parallel) //限制并发数
@@ -227,7 +237,10 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 		}(table)
 	}
 	wg.Wait()
-	return lastError
+	if errCount > 0 {
+		return errors.New("have some error")
+	}
+	return nil
 }
 
 func (f *TaskFullTableStarter) handleError(loggerTable common.Logger, result TaskFullTableResult, err error) {

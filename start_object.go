@@ -82,7 +82,7 @@ func (f *TaskObjectStarter) Start(ctx context.Context) error {
 			}
 			sql, err := destDBClient.GenerateTableSql(ctx, *loggerTable, table, tableDetail)
 			if err != nil {
-				result.Status = common.JobStatusFailed
+				f.handleError(*loggerTable, result, &tableDetail, err)
 				return
 			}
 			loggerTable.Logger.Sugar().Infof("sqls: %v\n", sql)

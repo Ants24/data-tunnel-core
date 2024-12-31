@@ -8,7 +8,10 @@ import (
 	common "github.com/Ants24/data-tunnel-common"
 )
 
-func ReadData(ctx context.Context, logger common.Logger, conn *sql.Conn, tableConfig TaskFullTable, columnNames []string, columnTypes []string, dataChannel chan []sql.NullString, genReadDataSql func(columnNames []string, taskConfig TaskFullTable) (string, []interface{})) (uint64, error) {
+func ReadData(ctx context.Context, logger common.Logger, conn *sql.Conn,
+	tableConfig TaskFullTable, columnNames []string, columnTypes []string,
+	dataChannel chan []sql.NullString,
+	genReadDataSql func(columnNames []string, taskConfig TaskFullTable) (string, []interface{})) (uint64, error) {
 	startTime := time.Now()
 	querySql, args := genReadDataSql(columnNames, tableConfig)
 	logger.Logger.Sugar().Debugf("Query table data sql: %s,args: %v", querySql, args)
@@ -66,6 +69,7 @@ func WriteData(ctx context.Context, logger common.Logger, tableConfig TaskFullTa
 	writerData := func(rows [][]interface{}) error {
 		count, err := batchInsert(ctx, rows, columnNames, tableConfig)
 		if err != nil {
+			logger.Logger.Sugar().Errorf("Batch insert error: %s", err)
 			{
 				//启动单条插入
 				if insertSingleData != nil {

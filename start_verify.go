@@ -113,7 +113,6 @@ func (f *TaskVerifyTableStarter) Start(ctx context.Context) error {
 				result.Status = common.VerifyStatusInconsistent
 			}
 			TaskVerifyTableResultChannel <- result
-
 		}(table)
 	}
 	wg.Wait()

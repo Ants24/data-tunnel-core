@@ -42,7 +42,6 @@ func (f *TaskObjectStarter) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-
 	destDBClient, err := GetDBClient(ctx, *logger, f.DestConfig)
 	if err != nil {
 		return err
@@ -71,17 +70,26 @@ func (f *TaskObjectStarter) Start(ctx context.Context) error {
 			defer semaphores.Release(1) // 确保信号量在任务完成后释放
 			tableDetail, err := sourceDBClient.GetTableDetail(ctx, *loggerTable, table)
 			if err != nil {
+				if lastError == nil {
+					lastError = err
+				}
 				f.handleError(*loggerTable, result, &tableDetail, err)
 				return
 			}
 			tableDetail.FromDBType = f.SourceConfig.DBType
 			tableDetail, err = destDBClient.GenerateTableDetail(ctx, *loggerTable, tableDetail)
 			if err != nil {
+				if lastError == nil {
+					lastError = err
+				}
 				f.handleError(*loggerTable, result, &tableDetail, err)
 				return
 			}
 			sql, err := destDBClient.GenerateTableSql(ctx, *loggerTable, table, tableDetail)
 			if err != nil {
+				if lastError == nil {
+					lastError = err
+				}
 				f.handleError(*loggerTable, result, &tableDetail, err)
 				return
 			}

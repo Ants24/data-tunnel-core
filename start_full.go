@@ -5,45 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"sync"
-	"time"
 
 	common "github.com/Ants24/data-tunnel-common"
 
 	semaphore "github.com/marusama/semaphore/v2"
 )
 
-type TaskFullTable struct {
-	TableId      uint
-	JobId        uint
-	SourceSchema string
-	SourceTable  string
-	DestSchema   string
-	DestTable    string
-	Filter       string
-	Config       common.TableFullConfig
-	// 一下做切片的配置
-	SplitId       int
-	SplitColumn   string
-	PartitionName string
-	StartValue    interface{}
-	EndValue      interface{}
-}
-
-type TaskFullTableResult struct {
-	JobId       uint
-	TableId     uint
-	SplitId     int
-	HandlerTime time.Time //处理时间
-	Status      common.JobStatus
-	TotalNum    uint64
-	SuccessNum  uint64
-	FailedNum   uint64
-	TakeTime    float64 //耗时
-	Err         error
-}
-
 type TaskFullTableStarter struct {
-	MigrationTask[TaskFullTable]
+	common.MigrationTask[common.TaskFullTable]
 }
 
 func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) error {
@@ -71,23 +40,23 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 		}
 		semaphores.Acquire(ctx, 1) //获取信号量
 		wg.Add(1)
-		go func(table TaskFullTable) {
+		go func(table common.TaskFullTable) {
 			var lastError error
 			defer wg.Done()
 			defer semaphores.Release(1)
 			loggerTable := common.NewLogWithoutConfig(f.JobCode + "-" + table.SourceTable)
 			defer loggerTable.Sync()
 			//推送
-			result := TaskFullTableResult{
+			result := common.TaskFullTableResult{
 				JobId:   f.JobId,
 				TableId: table.TableId,
 				Status:  common.JobStatusRunning,
 			}
-			TaskFullTableResultChannel <- result
+			common.TaskFullTableResultChannel <- result
 			//获取表的总数据量
 			var totalCount uint64
 			{
-				totalCount, err = sourceDBClient.SelectTableCount(ctx, *loggerTable, TableBase{
+				totalCount, err = sourceDBClient.SelectTableCount(ctx, *loggerTable, common.TableBase{
 					SchemeName: table.SourceSchema,
 					TableName:  table.SourceTable,
 					Filter:     table.Filter,
@@ -104,23 +73,22 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 					//推送
 					result.TotalNum = 0
 					result.Status = common.JobStatusFinished
-					TaskFullTableResultChannel <- result
+					common.TaskFullTableResultChannel <- result
 					return
 				} else {
 					//总数量,发送通道
 					//推送
 					result.TotalNum = totalCount
-					TaskFullTableResultChannel <- result
+					common.TaskFullTableResultChannel <- result
 				}
 				result.TotalNum = 0 // readNum只表示总数量,方便更新操作,此处重置,方便后续对result的使用
 			}
-			//数据通道
-			dataChannel := make(chan []sql.NullString, table.Config.ChannelSize)
 
 			sourceColumnNames := make([]string, 0)
 			sourceColumnTypes := make([]string, 0)
 			destColumnNames := make([]string, 0)
 			destColumnTypes := make([]string, 0)
+			//如果使用目标表的列,则需要获取目标表的列名
 			if isUseDestColumn {
 				destColumnNames, destColumnTypes, err = destDBClient.GetTableColumnNames(ctx, table.DestSchema, table.DestTable, []string{}, f.DestConfig.DBType)
 				if err != nil {
@@ -141,6 +109,7 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 					return
 				}
 			} else {
+				//不使用目标表的列,则需要获取源表的列名
 				sourceColumnNames, sourceColumnTypes, err = sourceDBClient.GetTableColumnNames(ctx, table.SourceSchema, table.SourceTable, []string{}, f.SourceConfig.DBType)
 				if err != nil {
 					errCount += 1
@@ -159,7 +128,7 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 					return
 				}
 			}
-			var subFullTasks []TaskFullTable
+			var subFullTasks []common.TaskFullTable
 			//如果总数量小于切片数量,则不用进行切片
 			if totalCount <= uint64(table.Config.SplitBatchSize) {
 				table.SplitId = 1
@@ -188,6 +157,8 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 					return
 				}
 			}
+			// 数据通道
+			dataChannel := make(chan []sql.NullString, table.Config.ChannelSize)
 
 			//启动写入任务
 			wg.Add(1)
@@ -211,14 +182,14 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 				}
 				subSemaphores.Acquire(ctx, 1)
 				subWg.Add(1)
-				go func(subFullTask TaskFullTable, subWg *sync.WaitGroup, subSemaphores semaphore.Semaphore) {
+				go func(subFullTask common.TaskFullTable, subWg *sync.WaitGroup, subSemaphores semaphore.Semaphore) {
 					defer subWg.Done()
 					defer subSemaphores.Release(1) //释放信号量
 					sourceColumnNamesCopy := make([]string, len(sourceColumnNames))
 					copy(sourceColumnNamesCopy, sourceColumnNames)
 					_, err := sourceDBClient.ReadData(ctx, *loggerTable, subFullTask, sourceColumnNamesCopy, sourceColumnTypes, dataChannel)
 					if err != nil {
-						lastError = err // 修正变量名: laseError -> lastError
+						lastError = err
 						//推送
 						f.handleError(*loggerTable, result, err)
 					}
@@ -233,7 +204,7 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 				//推送
 				result.Status = common.JobStatusFinished
 			}
-			TaskFullTableResultChannel <- result
+			common.TaskFullTableResultChannel <- result
 		}(table)
 	}
 	wg.Wait()
@@ -243,9 +214,9 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 	return nil
 }
 
-func (f *TaskFullTableStarter) handleError(loggerTable common.Logger, result TaskFullTableResult, err error) {
+func (f *TaskFullTableStarter) handleError(loggerTable common.Logger, result common.TaskFullTableResult, err error) {
 	loggerTable.Error(err.Error())
 	result.Status = common.JobStatusFailed
 	result.Err = err
-	TaskFullTableResultChannel <- result
+	common.TaskFullTableResultChannel <- result
 }

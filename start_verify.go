@@ -8,28 +8,8 @@ import (
 	semaphore "github.com/marusama/semaphore/v2"
 )
 
-type TaskVerifyTable struct {
-	TableId      uint
-	JobId        uint
-	SourceSchema string
-	SourceTable  string
-	DestSchema   string
-	DestTable    string
-	Filter       string
-	Config       common.TableVerifyConfig
-}
-
-type TaskVerifyTableResult struct {
-	JobId       uint
-	TableId     uint
-	Status      common.JobVerifyStatus
-	SourceCount uint64
-	DestCount   uint64
-	Error       error
-}
-
 type TaskVerifyTableStarter struct {
-	MigrationTask[TaskVerifyTable]
+	common.MigrationTask[common.TaskVerifyTable]
 }
 
 func (f *TaskVerifyTableStarter) Start(ctx context.Context) error {
@@ -57,23 +37,23 @@ func (f *TaskVerifyTableStarter) Start(ctx context.Context) error {
 		semaphores.Acquire(ctx, 1) //获取信号量
 		loggerTable := common.NewLogWithoutConfig(f.JobCode + "-" + table.SourceTable)
 		defer loggerTable.Sync()
-		result := TaskVerifyTableResult{
+		result := common.TaskVerifyTableResult{
 			JobId:   f.JobId,
 			TableId: table.TableId,
 			Status:  common.VerifyStatusRunning,
 		}
-		TaskVerifyTableResultChannel <- result
+		common.TaskVerifyTableResultChannel <- result
 		wg.Add(1)
-		go func(table TaskVerifyTable) {
+		go func(table common.TaskVerifyTable) {
 			defer wg.Done()
 			defer semaphores.Release(1)
 			sourceCount := uint64(0)
 			destCount := uint64(0)
 			var subWg sync.WaitGroup
 			subWg.Add(1)
-			go func(table TaskVerifyTable) {
+			go func(table common.TaskVerifyTable) {
 				defer subWg.Done()
-				count, err := sourceDBClient.SelectTableCount(ctx, *loggerTable, TableBase{
+				count, err := sourceDBClient.SelectTableCount(ctx, *loggerTable, common.TableBase{
 					TableName:  table.SourceTable,
 					SchemeName: table.SourceSchema,
 					Filter:     table.Filter,
@@ -86,9 +66,9 @@ func (f *TaskVerifyTableStarter) Start(ctx context.Context) error {
 				sourceCount = count
 			}(table)
 			subWg.Add(1)
-			go func(table TaskVerifyTable) {
+			go func(table common.TaskVerifyTable) {
 				defer subWg.Done()
-				count, err := destDBClient.SelectTableCount(ctx, *loggerTable, TableBase{
+				count, err := destDBClient.SelectTableCount(ctx, *loggerTable, common.TableBase{
 					TableName:  table.DestTable,
 					SchemeName: table.DestSchema,
 					Filter:     table.Filter,
@@ -112,7 +92,7 @@ func (f *TaskVerifyTableStarter) Start(ctx context.Context) error {
 			} else {
 				result.Status = common.VerifyStatusInconsistent
 			}
-			TaskVerifyTableResultChannel <- result
+			common.TaskVerifyTableResultChannel <- result
 		}(table)
 	}
 	wg.Wait()

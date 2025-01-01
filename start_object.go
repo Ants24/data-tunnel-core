@@ -8,30 +8,8 @@ import (
 	semaphore "github.com/marusama/semaphore/v2"
 )
 
-type TaskObjectTable struct {
-	TableId      uint
-	JobId        uint
-	SourceSchema string
-	SourceTable  string
-	DestSchema   string
-	DestTable    string
-	Config       common.TableObjectConfig
-}
-
-type TaskObjectTableResult struct {
-	JobId            uint
-	TableId          uint
-	TableComment     string
-	FromDBType       common.DBType
-	TableIndexes     []common.TableIndex
-	TableColumns     []common.TableColumn
-	TablePrimaryKeys []string
-	Error            error
-	Status           common.JobStatus
-}
-
 type TaskObjectStarter struct {
-	MigrationTask[TaskObjectTable]
+	common.MigrationTask[common.TaskObjectTable]
 }
 
 func (f *TaskObjectStarter) Start(ctx context.Context) error {
@@ -57,39 +35,33 @@ func (f *TaskObjectStarter) Start(ctx context.Context) error {
 		}
 		loggerTable := common.NewLogWithoutConfig(f.JobCode + "-" + table.SourceTable)
 		defer loggerTable.Sync()
-		result := TaskObjectTableResult{
+		result := common.TaskObjectTableResult{
 			JobId:   f.JobId,
 			TableId: table.TableId,
 			Status:  common.JobStatusRunning,
 		}
-		TaskObjectTableResultChannel <- result
+		common.TaskObjectTableResultChannel <- result
 		semaphores.Acquire(ctx, 1) //获取信号量
 		wg.Add(1)
-		go func(table TaskObjectTable) {
+		go func(table common.TaskObjectTable) {
 			defer wg.Done()
 			defer semaphores.Release(1) // 确保信号量在任务完成后释放
 			tableDetail, err := sourceDBClient.GetTableDetail(ctx, *loggerTable, table)
 			if err != nil {
-				if lastError == nil {
-					lastError = err
-				}
+				lastError = err
 				f.handleError(*loggerTable, result, &tableDetail, err)
 				return
 			}
 			tableDetail.FromDBType = f.SourceConfig.DBType
 			tableDetail, err = destDBClient.GenerateTableDetail(ctx, *loggerTable, tableDetail)
 			if err != nil {
-				if lastError == nil {
-					lastError = err
-				}
+				lastError = err
 				f.handleError(*loggerTable, result, &tableDetail, err)
 				return
 			}
 			sql, err := destDBClient.GenerateTableSql(ctx, *loggerTable, table, tableDetail)
 			if err != nil {
-				if lastError == nil {
-					lastError = err
-				}
+				lastError = err
 				f.handleError(*loggerTable, result, &tableDetail, err)
 				return
 			}
@@ -100,14 +72,14 @@ func (f *TaskObjectStarter) Start(ctx context.Context) error {
 			result.FromDBType = tableDetail.FromDBType
 			result.TableIndexes = tableDetail.Indexes
 			result.TablePrimaryKeys = tableDetail.PrimaryKeys
-			TaskObjectTableResultChannel <- result
+			common.TaskObjectTableResultChannel <- result
 		}(table)
 	}
 	wg.Wait()
 	return lastError
 }
 
-func (f *TaskObjectStarter) handleError(loggerTable common.Logger, result TaskObjectTableResult, tableDetail *TableDetail, err error) {
+func (f *TaskObjectStarter) handleError(loggerTable common.Logger, result common.TaskObjectTableResult, tableDetail *common.TableDetail, err error) {
 	loggerTable.Logger.Sugar().Errorf(" %v\n", err)
 	result.Error = err
 	result.Status = common.JobStatusFailed
@@ -118,9 +90,9 @@ func (f *TaskObjectStarter) handleError(loggerTable common.Logger, result TaskOb
 		result.TableIndexes = tableDetail.Indexes
 		result.TablePrimaryKeys = tableDetail.PrimaryKeys
 	}
-	TaskObjectTableResultChannel <- result
+	common.TaskObjectTableResultChannel <- result
 }
-func (f *TaskObjectStarter) Execute(ctx context.Context, tableInfo TaskObjectTable, tableDetail TableDetail) error {
+func (f *TaskObjectStarter) Execute(ctx context.Context, tableInfo common.TaskObjectTable, tableDetail common.TableDetail) error {
 	loggerTable := common.NewLogWithoutConfig(f.JobCode + "-" + tableInfo.SourceTable)
 	defer loggerTable.Sync()
 
@@ -128,12 +100,12 @@ func (f *TaskObjectStarter) Execute(ctx context.Context, tableInfo TaskObjectTab
 	if err != nil {
 		return err
 	}
-	result := TaskObjectTableResult{
+	result := common.TaskObjectTableResult{
 		JobId:   f.JobId,
 		TableId: tableInfo.TableId,
 		Status:  common.JobStatusRunning,
 	}
-	TaskObjectTableResultChannel <- result
+	common.TaskObjectTableResultChannel <- result
 	sqls, err := destDBClient.GenerateTableSql(ctx, *loggerTable, tableInfo, tableDetail)
 	if err != nil {
 		f.handleError(*loggerTable, result, &tableDetail, err)
@@ -146,6 +118,6 @@ func (f *TaskObjectStarter) Execute(ctx context.Context, tableInfo TaskObjectTab
 	result.FromDBType = tableDetail.FromDBType
 	result.TableIndexes = tableDetail.Indexes
 	result.TablePrimaryKeys = tableDetail.PrimaryKeys
-	TaskObjectTableResultChannel <- result
+	common.TaskObjectTableResultChannel <- result
 	return nil
 }

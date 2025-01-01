@@ -8,9 +8,9 @@ import (
 	common "github.com/Ants24/data-tunnel-common"
 )
 
-var DBCLIENT_CACHE = make(map[string]DBClient, 0)
+var DBCLIENT_CACHE = make(map[string]common.DBClient, 0)
 
-func GetDBClient(ctx context.Context, logger common.Logger, dbConfig common.DBConfig) (DBClient, error) {
+func GetDBClient(ctx context.Context, logger common.Logger, dbConfig common.DBConfig) (common.DBClient, error) {
 	key := fmt.Sprintf("%s:%s:%d:%s", dbConfig.Username, dbConfig.Host, dbConfig.Port, dbConfig.Database)
 	client, ok := DBCLIENT_CACHE[key]
 	if ok {
@@ -30,7 +30,7 @@ func GetDBClient(ctx context.Context, logger common.Logger, dbConfig common.DBCo
 		return nil, err
 	}
 	// 断言 NewProcessor 为函数类型
-	newDBClientFunc, ok := symbol.(func(context.Context, common.Logger, common.DBConfig) (DBClient, error))
+	newDBClientFunc, ok := symbol.(func(context.Context, common.Logger, common.DBConfig) (common.DBClient, error))
 	if !ok {
 		panic(fmt.Sprintf("symbol DBClientInstance in %s is not of expected type", dbConfig.DBType))
 	}

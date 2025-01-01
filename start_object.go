@@ -59,13 +59,16 @@ func (f *TaskObjectStarter) Start(ctx context.Context) error {
 				f.handleError(*loggerTable, result, &tableDetail, err)
 				return
 			}
-			sql, err := destDBClient.GenerateTableSql(ctx, *loggerTable, table, tableDetail)
+			successSqls, failedSqls, err := destDBClient.GenerateTableSql(ctx, *loggerTable, table, tableDetail)
+			result.SuccessSqls = successSqls
+			result.FailedSqls = failedSqls
 			if err != nil {
 				lastError = err
 				f.handleError(*loggerTable, result, &tableDetail, err)
 				return
 			}
-			loggerTable.Logger.Sugar().Infof("sqls: %v\n", sql)
+			loggerTable.Logger.Sugar().Infof("successSqls: %v\n", successSqls)
+			loggerTable.Logger.Sugar().Infof("failedSqls: %v\n", failedSqls)
 			result.TableComment = tableDetail.Comment
 			result.TableColumns = tableDetail.Columns
 			result.Status = common.JobStatusFinished
@@ -106,12 +109,15 @@ func (f *TaskObjectStarter) Execute(ctx context.Context, tableInfo common.TaskOb
 		Status:  common.JobStatusRunning,
 	}
 	common.TaskObjectTableResultChannel <- result
-	sqls, err := destDBClient.GenerateTableSql(ctx, *loggerTable, tableInfo, tableDetail)
+	successSqls, failedSqls, err := destDBClient.GenerateTableSql(ctx, *loggerTable, tableInfo, tableDetail)
+	result.SuccessSqls = successSqls
+	result.FailedSqls = failedSqls
 	if err != nil {
 		f.handleError(*loggerTable, result, &tableDetail, err)
 		return err
 	}
-	loggerTable.Logger.Sugar().Infof("sqls: %v\n", sqls)
+	loggerTable.Logger.Sugar().Infof("successSqls: %v\n", successSqls)
+	loggerTable.Logger.Sugar().Infof("failedSqls: %v\n", failedSqls)
 	result.TableComment = tableDetail.Comment
 	result.TableColumns = tableDetail.Columns
 	result.Status = common.JobStatusFinished

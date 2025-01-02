@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"sync"
 
 	common "github.com/Ants24/data-tunnel-common"
@@ -18,14 +19,16 @@ type TaskFullTableStarter struct {
 func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) error {
 	logger := common.NewLogWithoutConfig(f.JobCode)
 	defer logger.Sync()
+
+	// Initialize clients with enhanced error context
 	sourceDBClient, err := GetDBClient(ctx, *logger, f.SourceConfig)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to initialize source DB client: %w", err)
 	}
 
 	destDBClient, err := GetDBClient(ctx, *logger, f.DestConfig)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to initialize destination DB client: %w", err)
 	}
 
 	errCount := 0
@@ -33,13 +36,13 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 	// 修正变量名: laseError -> lastError
 	semaphores := semaphore.New(f.Parallel) //限制并发数
 	for _, table := range f.Tables {
+		semaphores.Acquire(ctx, 1) //获取信号量
+		wg.Add(1)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-		semaphores.Acquire(ctx, 1) //获取信号量
-		wg.Add(1)
 		go func(table common.TaskFullTable) {
 			var lastError error
 			defer wg.Done()
@@ -217,6 +220,5 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 func (f *TaskFullTableStarter) handleError(loggerTable common.Logger, result common.TaskFullTableResult, err error) {
 	loggerTable.Error(err.Error())
 	result.Status = common.JobStatusFailed
-	result.Err = err
 	common.TaskFullTableResultChannel <- result
 }

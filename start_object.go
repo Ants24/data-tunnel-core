@@ -28,6 +28,8 @@ func (f *TaskObjectStarter) Start(ctx context.Context) error {
 	var wg sync.WaitGroup                   //并发控制,确保所有任务都完成
 	semaphores := semaphore.New(f.Parallel) //限制并发数
 	for _, table := range f.Tables {
+		semaphores.Acquire(ctx, 1) //获取信号量
+		wg.Add(1)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -41,8 +43,6 @@ func (f *TaskObjectStarter) Start(ctx context.Context) error {
 			Status:  common.JobStatusRunning,
 		}
 		common.TaskObjectTableResultChannel <- result
-		semaphores.Acquire(ctx, 1) //获取信号量
-		wg.Add(1)
 		go func(table common.TaskObjectTable) {
 			defer wg.Done()
 			defer semaphores.Release(1) // 确保信号量在任务完成后释放

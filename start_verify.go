@@ -29,12 +29,13 @@ func (f *TaskVerifyTableStarter) Start(ctx context.Context) error {
 	var mu sync.Mutex
 	var lastError error
 	for _, table := range f.Tables {
+		semaphores.Acquire(ctx, 1) //获取信号量
+		wg.Add(1)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-		semaphores.Acquire(ctx, 1) //获取信号量
 		loggerTable := common.NewLogWithoutConfig(f.JobCode + "-" + table.SourceTable)
 		defer loggerTable.Sync()
 		result := common.TaskVerifyTableResult{
@@ -43,7 +44,7 @@ func (f *TaskVerifyTableStarter) Start(ctx context.Context) error {
 			Status:  common.VerifyStatusRunning,
 		}
 		common.TaskVerifyTableResultChannel <- result
-		wg.Add(1)
+
 		go func(table common.TaskVerifyTable) {
 			defer wg.Done()
 			defer semaphores.Release(1)

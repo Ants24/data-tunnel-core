@@ -3,7 +3,6 @@ package datatunnelcore
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"sync"
 
@@ -31,18 +30,19 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 		return fmt.Errorf("failed to initialize destination DB client: %w", err)
 	}
 
-	errCount := 0
+	errTables := make(map[string]string, 0)
 	var wg sync.WaitGroup //并发控制,确保所有任务都完成
 	// 修正变量名: laseError -> lastError
 	semaphores := semaphore.New(f.Parallel) //限制并发数
 	for _, table := range f.Tables {
 		semaphores.Acquire(ctx, 1) //获取信号量
-		wg.Add(1)
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
+		wg.Add(1)
 		go func(table common.TaskFullTable) {
 			var lastError error
 			defer wg.Done()
@@ -65,7 +65,7 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 					Filter:     table.Filter,
 				})
 				if err != nil {
-					errCount += 1
+					errTables[table.SourceTable] = err.Error()
 					//推送
 					f.handleError(*loggerTable, result, err)
 					return
@@ -95,7 +95,7 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 			if isUseDestColumn {
 				destColumnNames, destColumnTypes, err = destDBClient.GetTableColumnNames(ctx, table.DestSchema, table.DestTable, []string{}, f.DestConfig.DBType)
 				if err != nil {
-					errCount += 1
+					errTables[table.SourceTable] = err.Error()
 					lastError = err
 					//推送
 					f.handleError(*loggerTable, result, err)
@@ -105,7 +105,7 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 				copy(destinationColumnNamesCopy, destColumnNames)
 				sourceColumnNames, sourceColumnTypes, err = sourceDBClient.GetTableColumnNames(ctx, table.SourceSchema, table.SourceTable, destinationColumnNamesCopy, f.DestConfig.DBType)
 				if err != nil {
-					errCount += 1
+					errTables[table.SourceTable] = err.Error()
 					lastError = err
 					//推送
 					f.handleError(*loggerTable, result, err)
@@ -115,7 +115,7 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 				//不使用目标表的列,则需要获取源表的列名
 				sourceColumnNames, sourceColumnTypes, err = sourceDBClient.GetTableColumnNames(ctx, table.SourceSchema, table.SourceTable, []string{}, f.SourceConfig.DBType)
 				if err != nil {
-					errCount += 1
+					errTables[table.SourceTable] = err.Error()
 					lastError = err
 					//推送
 					f.handleError(*loggerTable, result, err)
@@ -125,7 +125,7 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 				copy(sourceColumnNamesCopy, sourceColumnNames)
 				destColumnNames, destColumnTypes, err = destDBClient.GetTableColumnNames(ctx, table.DestSchema, table.DestTable, sourceColumnNamesCopy, f.SourceConfig.DBType)
 				if err != nil {
-					errCount += 1
+					errTables[table.SourceTable] = err.Error()
 					//推送
 					f.handleError(*loggerTable, result, err)
 					return
@@ -140,6 +140,7 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 				//对表进行切片
 				subFullTasks, err = sourceDBClient.GenerateSubTasks(ctx, *loggerTable, table)
 				if err != nil {
+					errTables[table.SourceTable] = err.Error()
 					lastError = err
 					//推送
 					f.handleError(*loggerTable, result, err)
@@ -162,16 +163,25 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 			}
 			// 数据通道
 			dataChannel := make(chan []sql.NullString, table.Config.ChannelSize)
-
+			dataChannelClose := false
 			//启动写入任务
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						fmt.Println("Consumer panicked:", r)
+					}
+				}()
 				err := destDBClient.WriteData(ctx, *loggerTable, table, destColumnNames, destColumnTypes, dataChannel)
 				if err != nil {
+					errTables[table.SourceTable] = err.Error()
 					//推送
 					f.handleError(*loggerTable, result, err)
-					return
+				}
+				if !dataChannelClose {
+					dataChannelClose = true
+					close(dataChannel)
 				}
 			}()
 			subSemaphores := semaphore.New(table.Config.Parallel) //限制并发数
@@ -186,12 +196,18 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 				subSemaphores.Acquire(ctx, 1)
 				subWg.Add(1)
 				go func(subFullTask common.TaskFullTable, subWg *sync.WaitGroup, subSemaphores semaphore.Semaphore) {
+					defer func() {
+						if r := recover(); r != nil {
+							fmt.Println("product panicked:", r)
+						}
+					}()
 					defer subWg.Done()
 					defer subSemaphores.Release(1) //释放信号量
 					sourceColumnNamesCopy := make([]string, len(sourceColumnNames))
 					copy(sourceColumnNamesCopy, sourceColumnNames)
 					_, err := sourceDBClient.ReadData(ctx, *loggerTable, subFullTask, sourceColumnNamesCopy, sourceColumnTypes, dataChannel)
 					if err != nil {
+						errTables[table.SourceTable] = err.Error()
 						lastError = err
 						//推送
 						f.handleError(*loggerTable, result, err)
@@ -199,7 +215,10 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 				}(subFullTask, &subWg, subSemaphores)
 			}
 			subWg.Wait() //等待子任务完成
-			close(dataChannel)
+			if !dataChannelClose {
+				dataChannelClose = true
+				close(dataChannel)
+			}
 			if lastError != nil {
 				//推送
 				result.Status = common.JobStatusFailed
@@ -211,8 +230,8 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 		}(table)
 	}
 	wg.Wait()
-	if errCount > 0 {
-		return errors.New("have some error")
+	if len(errTables) > 0 {
+		return fmt.Errorf("Have %d table error: ", len(errTables))
 	}
 	return nil
 }
@@ -220,5 +239,6 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 func (f *TaskFullTableStarter) handleError(loggerTable common.Logger, result common.TaskFullTableResult, err error) {
 	loggerTable.Error(err.Error())
 	result.Status = common.JobStatusFailed
+	result.Err = err
 	common.TaskFullTableResultChannel <- result
 }

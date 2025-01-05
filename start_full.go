@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sync"
+	"time"
 
 	common "github.com/Ants24/data-tunnel-common"
 
@@ -47,7 +48,7 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 			var lastError error
 			defer wg.Done()
 			defer semaphores.Release(1)
-			loggerTable := common.NewLogWithoutConfig(f.JobCode + "-" + table.SourceTable)
+			loggerTable := common.NewLogWithoutConfig(f.JobCode + "-" + table.SourceTableInfo.TableName)
 			defer loggerTable.Sync()
 			//推送
 			result := common.TaskFullTableResult{
@@ -59,13 +60,9 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 			//获取表的总数据量
 			var totalCount uint64
 			{
-				totalCount, err = sourceDBClient.SelectTableCount(ctx, *loggerTable, common.TableBase{
-					SchemeName: table.SourceSchema,
-					TableName:  table.SourceTable,
-					Filter:     table.Filter,
-				})
+				totalCount, err = sourceDBClient.SelectTableCount(ctx, *loggerTable, table.SourceTableInfo)
 				if err != nil {
-					errTables[table.SourceTable] = err.Error()
+					errTables[table.SourceTableInfo.TableName] = err.Error()
 					//推送
 					f.handleError(*loggerTable, result, err)
 					return
@@ -93,9 +90,9 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 			destColumnTypes := make([]string, 0)
 			//如果使用目标表的列,则需要获取目标表的列名
 			if isUseDestColumn {
-				destColumnNames, destColumnTypes, err = destDBClient.GetTableColumnNames(ctx, table.DestSchema, table.DestTable, []string{}, f.DestConfig.DBType)
+				destColumnNames, destColumnTypes, err = destDBClient.GetTableColumnNames(ctx, table.DestTableInfo, []string{}, f.DestConfig.DBType)
 				if err != nil {
-					errTables[table.SourceTable] = err.Error()
+					errTables[table.SourceTableInfo.TableName] = err.Error()
 					lastError = err
 					//推送
 					f.handleError(*loggerTable, result, err)
@@ -103,9 +100,9 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 				}
 				destinationColumnNamesCopy := make([]string, len(destColumnNames))
 				copy(destinationColumnNamesCopy, destColumnNames)
-				sourceColumnNames, sourceColumnTypes, err = sourceDBClient.GetTableColumnNames(ctx, table.SourceSchema, table.SourceTable, destinationColumnNamesCopy, f.DestConfig.DBType)
+				sourceColumnNames, sourceColumnTypes, err = sourceDBClient.GetTableColumnNames(ctx, table.SourceTableInfo, destinationColumnNamesCopy, f.DestConfig.DBType)
 				if err != nil {
-					errTables[table.SourceTable] = err.Error()
+					errTables[table.SourceTableInfo.TableName] = err.Error()
 					lastError = err
 					//推送
 					f.handleError(*loggerTable, result, err)
@@ -113,9 +110,9 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 				}
 			} else {
 				//不使用目标表的列,则需要获取源表的列名
-				sourceColumnNames, sourceColumnTypes, err = sourceDBClient.GetTableColumnNames(ctx, table.SourceSchema, table.SourceTable, []string{}, f.SourceConfig.DBType)
+				sourceColumnNames, sourceColumnTypes, err = sourceDBClient.GetTableColumnNames(ctx, table.SourceTableInfo, []string{}, f.SourceConfig.DBType)
 				if err != nil {
-					errTables[table.SourceTable] = err.Error()
+					errTables[table.SourceTableInfo.TableName] = err.Error()
 					lastError = err
 					//推送
 					f.handleError(*loggerTable, result, err)
@@ -123,9 +120,9 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 				}
 				sourceColumnNamesCopy := make([]string, len(sourceColumnNames))
 				copy(sourceColumnNamesCopy, sourceColumnNames)
-				destColumnNames, destColumnTypes, err = destDBClient.GetTableColumnNames(ctx, table.DestSchema, table.DestTable, sourceColumnNamesCopy, f.SourceConfig.DBType)
+				destColumnNames, destColumnTypes, err = destDBClient.GetTableColumnNames(ctx, table.DestTableInfo, sourceColumnNamesCopy, f.SourceConfig.DBType)
 				if err != nil {
-					errTables[table.SourceTable] = err.Error()
+					errTables[table.SourceTableInfo.TableName] = err.Error()
 					//推送
 					f.handleError(*loggerTable, result, err)
 					return
@@ -138,9 +135,9 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 				subFullTasks = append(subFullTasks, table)
 			} else {
 				//对表进行切片
-				subFullTasks, err = sourceDBClient.GenerateSubTasks(ctx, *loggerTable, table)
+				subFullTasks, err = sourceDBClient.GenerateSubTasks(ctx, *loggerTable, table.SourceTableInfo, table)
 				if err != nil {
-					errTables[table.SourceTable] = err.Error()
+					errTables[table.SourceTableInfo.TableName] = err.Error()
 					lastError = err
 					//推送
 					f.handleError(*loggerTable, result, err)
@@ -154,7 +151,7 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 
 			//清空表
 			if table.Config.Truncate {
-				err := destDBClient.TruncateTable(ctx, *loggerTable, table.DestSchema, table.DestTable)
+				err := destDBClient.TruncateTable(ctx, *loggerTable, table.DestTableInfo)
 				if err != nil {
 					//推送
 					f.handleError(*loggerTable, result, err)
@@ -165,6 +162,7 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 			dataChannel := make(chan []sql.NullString, table.Config.ChannelSize)
 			dataChannelClose := false
 			//启动写入任务
+			starTime := time.Now()
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -173,9 +171,9 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 						fmt.Println("Consumer panicked:", r)
 					}
 				}()
-				err := destDBClient.WriteData(ctx, *loggerTable, table, destColumnNames, destColumnTypes, dataChannel)
+				err := destDBClient.WriteData(ctx, *loggerTable, table.DestTableInfo, table, destColumnNames, destColumnTypes, dataChannel)
 				if err != nil {
-					errTables[table.SourceTable] = err.Error()
+					errTables[table.SourceTableInfo.TableName] = err.Error()
 					//推送
 					f.handleError(*loggerTable, result, err)
 				}
@@ -205,9 +203,9 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 					defer subSemaphores.Release(1) //释放信号量
 					sourceColumnNamesCopy := make([]string, len(sourceColumnNames))
 					copy(sourceColumnNamesCopy, sourceColumnNames)
-					_, err := sourceDBClient.ReadData(ctx, *loggerTable, subFullTask, sourceColumnNamesCopy, sourceColumnTypes, dataChannel)
+					_, err := sourceDBClient.ReadData(ctx, *loggerTable, subFullTask.SourceTableInfo, subFullTask, sourceColumnNamesCopy, sourceColumnTypes, dataChannel, f.DestConfig.DBType)
 					if err != nil {
-						errTables[table.SourceTable] = err.Error()
+						errTables[table.SourceTableInfo.TableName] = err.Error()
 						lastError = err
 						//推送
 						f.handleError(*loggerTable, result, err)
@@ -215,6 +213,8 @@ func (f *TaskFullTableStarter) Start(ctx context.Context, isUseDestColumn bool) 
 				}(subFullTask, &subWg, subSemaphores)
 			}
 			subWg.Wait() //等待子任务完成
+			subTime := time.Since(starTime)
+			loggerTable.Logger.Sugar().Infof("RPS: %v", float64(totalCount)/subTime.Seconds())
 			if !dataChannelClose {
 				dataChannelClose = true
 				close(dataChannel)

@@ -35,7 +35,7 @@ func (f *TaskObjectStarter) Start(ctx context.Context) error {
 			return ctx.Err()
 		default:
 		}
-		loggerTable := common.NewLogWithoutConfig(f.JobCode + "-" + table.SourceTable)
+		loggerTable := common.NewLogWithoutConfig(f.JobCode + "-" + table.SourceTableInfo.TableName)
 		defer loggerTable.Sync()
 		result := common.TaskObjectTableResult{
 			JobId:   f.JobId,
@@ -46,7 +46,7 @@ func (f *TaskObjectStarter) Start(ctx context.Context) error {
 		go func(table common.TaskObjectTable) {
 			defer wg.Done()
 			defer semaphores.Release(1) // 确保信号量在任务完成后释放
-			tableDetail, err := sourceDBClient.GetTableDetail(ctx, *loggerTable, table)
+			tableDetail, err := sourceDBClient.GetTableDetail(ctx, *loggerTable, table.SourceTableInfo, table)
 			if err != nil {
 				lastError = err
 				f.handleError(*loggerTable, result, &tableDetail, err)
@@ -59,7 +59,7 @@ func (f *TaskObjectStarter) Start(ctx context.Context) error {
 				f.handleError(*loggerTable, result, &tableDetail, err)
 				return
 			}
-			successSqls, failedSqls, err := destDBClient.GenerateTableSql(ctx, *loggerTable, table, tableDetail)
+			successSqls, failedSqls, err := destDBClient.GenerateTableSql(ctx, *loggerTable, table.DestTableInfo, table, tableDetail)
 			result.SuccessSqls = successSqls
 			result.FailedSqls = failedSqls
 			if err != nil {
@@ -96,7 +96,7 @@ func (f *TaskObjectStarter) handleError(loggerTable common.Logger, result common
 	common.TaskObjectTableResultChannel <- result
 }
 func (f *TaskObjectStarter) Execute(ctx context.Context, tableInfo common.TaskObjectTable, tableDetail common.TableDetail) error {
-	loggerTable := common.NewLogWithoutConfig(f.JobCode + "-" + tableInfo.SourceTable)
+	loggerTable := common.NewLogWithoutConfig(f.JobCode + "-" + tableInfo.SourceTableInfo.TableName)
 	defer loggerTable.Sync()
 
 	destDBClient, err := GetDBClient(ctx, *loggerTable, f.DestConfig)
@@ -109,7 +109,7 @@ func (f *TaskObjectStarter) Execute(ctx context.Context, tableInfo common.TaskOb
 		Status:  common.JobStatusRunning,
 	}
 	common.TaskObjectTableResultChannel <- result
-	successSqls, failedSqls, err := destDBClient.GenerateTableSql(ctx, *loggerTable, tableInfo, tableDetail)
+	successSqls, failedSqls, err := destDBClient.GenerateTableSql(ctx, *loggerTable, tableInfo.DestTableInfo, tableInfo, tableDetail)
 	result.SuccessSqls = successSqls
 	result.FailedSqls = failedSqls
 	if err != nil {
